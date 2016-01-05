@@ -1,0 +1,261 @@
+import akka.actor.{ActorRef, ActorSystem, Props, Actor, Inbox}
+import akka.actor._
+import scala.concurrent.{Await, Future}
+import scala.concurrent.duration._
+import akka.pattern.ask
+
+import scala.util.control._
+import scala.collection.mutable.ArrayBuffer
+import scala.concurrent.duration._
+import com.typesafe.config.ConfigFactory
+
+/**
+Search/Lookup:
+find_successor(id)
+find_predecessor(id)
+closest_preceding_finger(id)
+
+
+Node join:
+join()
+init_finger_table()
+update_others()
+update_finger_table()
+
+
+Concurrent join:
+join()
+stabilize()
+notify()
+fix_fingers()
+
+*/
+
+case class ConcurrentJoin(randomNode: ActorRef)
+
+class Node(nodeId:BigInt, KEY_LENGTH:Int, MAX_KEY:BigInt) extends Actor{
+
+
+	var successorNode: ActorRef = fingerTable(1).successor
+	var predecessorNode: ActorRef= null
+	var fingerTable: ArrayBuffer[Finger] = new ArrayBuffer[Finger]
+	var start= nodeId
+	for (i <- 1 to KEY_LENGTH){
+		start = (start + pow(2,(i-1))) % pow(2, KEY_LENGTH)
+		end = (start + pow(2,(i))) % pow(2, KEY_LENGTH)
+		fingerTable(i)= new Finger(start)
+	}
+
+
+	def receive = {
+		//concurrent join at the beginning
+		case GetNodeID() => sender ! nodeId
+		case getSuccessor() => sender ! successorNode
+		case getPredecessor() => sender! predecessorNode
+		case setPredecessor(node: ActorRef) => predecessorNode = node
+		case ConcurrentJoin(randomNode: ActorRef) =>
+						predecessorNode=null
+						succ= randomNode ? find_successor(nodeId)
+						fingerTable(1).setsuccessor(n)
+		case stabilize() => stabilize()
+		case notify(randomNode) => notify(randomNode)
+		case fix_fingers() => fix_fingers()
+
+		//lookup
+		case find_successor(id) => find_successor(nodeId, id)
+		case find_predecessor(id) => find_predecessor(nodeId, id)
+		case closest_preceding_finger(id) => closest_preceding_finger(nodeId,id)
+
+		//node join
+		case join(randomNode:ActorRef) =>
+			if (randomNode != null){
+				init_finger_table(randomNode) 
+				update_others()
+			}
+			else{
+				for (i<-1 to KEY_LENGTH){
+					fingerTable(i).setSuccessor(self)					
+				}
+				predecessorNode = self
+
+			}
+		 
+		 	update_finger_table()
+
+
+	}
+//def GetNodeID() { return nodeId}
+//def getSuccessor(){}
+//def getPredecessor()
+
+def find_successor(nodeId:Int, id: Int){
+	var predecessor:ActorRef = find_predecessor(nodeId ,id)	
+	var successor = predecessor ? getSuccessor()	
+	sender ! successor
+
+}
+def find_predecessor(nodeId:Int, id:Int){
+	var temp = self
+	var tempId = nodeId
+	var tempSuccessor = temp ? getSuccessor()
+	var tempSuccessorId = tempSuccessor ? GetNodeID
+	while (inRange_rightIncluded(id, tempId, tempSuccessorId)==false){
+		temp = temp ? closest_preceding_finger(id)
+		tempId = temp ? GetNodeID()
+		tempSuccessor = temp ? getSuccessor()
+		tempSuccessorId = tempSuccessor ? GetNodeID
+
+	}
+
+	sender ! temp
+
+}
+def closest_preceding_finger(nodeId:Int, id:Int){
+	for (i<- (KEY_LENGTH to 1 by -1)){
+		
+		var closestNodeId = fingerTable[i].successorId
+		if (inRange(closestNodeId, nodeId, id)){
+			return fingerTable(i).successor
+		}
+	}
+	return nodeId
+
+}
+//def getFinger(int i): Finger = {
+//		return fingerTable[i];
+
+
+
+def init_finger_table(randomNode:ActorRef){
+	val temp1 = randomNode ? find_successor(fingerTable(1).start)
+	fingerTable(1).setSuccessor(temp1)
+	predecessor = successorNode ? getPredecessor()
+	successorNode ! setPredecessor(self)
+	for (i<-1 to (KEY_LENGTH-1)){
+		if (inRange_leftIncluded(fingerTable(i+1).start , nodeId, fingerTable(i).successorId)){
+			fingerTable(i+1).setSuccessor = fingerTable(i).successor
+		}
+		else{
+			val temp2 = randomNode ? find_successor(fingerTable(i+1).start)
+			fingerTable(i+1).setSuccessor = temp2
+		}
+	}
+
+}
+
+def update_others(){
+	for (i<-1 to KEY_LENGTH){
+		val temp = find_predecessor(nodeId - pow(2, (i-1)))
+		temp ! update_finger_table(nodeId, i)
+	}
+
+}
+
+def update_finger_table(s:Int,i:Int){
+	if (inRange_leftIncluded(s, n, fingerTable(i).successorId)){
+		fingerTable(i).setSuccessorNode = s
+		p = predecessorNode
+		p ! update_finger_table(s,i)
+	}
+}
+
+
+def stabilize{
+	val temp = successorNode ? getPredecessor
+	val tempId = temp ? GetNodeID
+	val successorNodeId = successorNode ? GetNodeID
+	if (inRange(tempId, nodeId, successorNodeId)){
+		fingerTable(1).setSuccessor(temp)
+	}
+	successorNode ! notify(nodeId)
+}
+
+def notify(randomNode:ActorRef){
+	val y= randomNode ? GetNodeID()	
+	val predecessorNodeId = predecessorNode ? GetNodeID()
+	if ((predecessorNode == null) || (inRange(y, predecessorNodeId, nodeId ))){
+		predecessorNode = randomNode
+	}
+}
+
+def fix_fingers(){
+	for (i<- 1 to KEY_LENGTH){
+		val z = fingerTable(i).getStart()
+		fingerTable(i).setSuccessor(find_successor(z))
+	}
+
+}
+
+def inRange(id:Int, left:Int, right:Int):Boolean= {
+	if (right>left){
+		if ((id>left) && (id < right)){
+			return true
+		}
+		else {return false}
+	}
+	else{
+		if (((id>left)&& (id <= MAX_KEY)) || ((id >=0) && (id < right))){
+			return true
+		}
+		else {return false}
+	}
+
+}
+
+def inRange_rightIncluded(id:Int, left:Int, right:Int):Boolean= {
+	if (right>left){
+		if ((id>left) && (id <=right)){
+			return true
+		}
+		else {return false}
+	}
+	else{
+		if (((id>left) && (id <=MAX_KEY)) || ((id >=0) && (id <=right))){
+			return true
+		}
+		else {return false}
+	}
+
+}
+
+def inRange_leftIncluded(id:Int, left:Int, right:Int):Boolean= {
+	if (right>left){
+		if ((id >= left) && (id < right)){
+			return true
+		}
+		else {return false}
+	}
+	else{
+		if (((id >= left) && (id <=MAX_KEY)) || ((id >=0) && (id < right))){
+			return true
+		}
+		else {return false}
+	}
+
+}
+}
+
+class Finger(start:Int, end:Int) {
+	var start = start
+	var end = end
+	var range = Set(start, end)
+	var successor : ActorRef = find_successor(start)
+	var successorId = successorNode ? GetNodeID()
+	//ar predecessor
+	//var predecessorNodeId = predecessorNode ? GetNodeID()
+
+	def getStart() {
+		return range.head
+	}
+	def setStart(start:String) {
+		range.head = start
+	}
+	def getSuccessor() {
+		return successorNode
+	}
+	def setSuccessor(node: ActorRef) {
+		successorNode = node
+	}
+}
+
+

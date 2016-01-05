@@ -1,0 +1,376 @@
+import akka.actor.{ ActorRef, ActorSystem, Props, Actor }
+import scala.collection.mutable.HashMap
+import scala.collection.mutable.ListBuffer
+import scala.collection.mutable.Queue
+import scala.collection.mutable.ArrayBuffer
+import spray.json._
+import DefaultJsonProtocol._
+import java.security.PublicKey
+import FacebookJsonProtocol._
+
+
+
+
+
+//case class postReceived(statuskey:StatusKey, text:String)
+case class updateTimeline(postText: String, userID: Int, friendsublist: ListBuffer[Int])
+case class requestProfile(userID: Int)
+case class requestPage(userID: Int)
+case class requestFriendsList(userID: Int)
+case class photoReceived(userID: Int,  albumId: String, photoId: String, source:String)
+case class PutAlbum(userID: Int,  albumId: String)
+case class requestPhotos(userID: Int)
+case class INIT()
+case class STOP()
+case class PutPublicKey(userID:Int, pubKey:String)
+case class GenerateToken(userID:Int)
+case class RequestStatus(statuskey: StatusKey)
+
+
+
+
+class ServerDB(numUsers: Int, ac: ActorSystem, myID: Int, numServerDBs: Int, friendsLimit: Int) extends Actor {
+  var pagesTable = HashMap.empty[Int, Queue[Tuple2[String, Int]]]
+  var postsTable = HashMap.empty[Int, Queue[Tuple2[String, Int]]]
+  //var friendsTable = HashMap.empty[Int, ListBuffer[Int]]
+  var photosTable= HashMap.empty[Tuple2[Int, String], Tuple2[String, String]]
+  var imagesTable = 
+
+
+// Metadata
+  var friendsListTable = new HashMap[Int, ListBuffer[Int]]
+  var albumsTable = new HashMap[Int, ListBuffer[String]]
+  var publicKeysTable = new HashMap[Int, String]
+  var userAcrefTable = new HashMap[Int, ActorRef]
+
+
+// Data
+  var statusTable = new HashMap[StatusKey, StatusText]
+  //var photosTable = new HashMap[Tuple4[Int, Double, String, String], String]
+
+
+  val DEBUG = false
+
+
+
+  def receive = {
+    case INIT() => init(sender)
+
+
+    case updateTimeline(postText: String, userID: Int, friendsublist: ListBuffer[Int]) => updatePostQueue(postText: String, userID: Int, friendsublist: ListBuffer[Int])
+    case requestProfile(userID: Int) => returnProfile(userID)
+    case requestPage(userID: Int) => returnPage(userID)
+
+    case Status(statuskey: StatusKey, text:StatusText) =>
+        statusTable(statuskey)= text
+        println(statusTable)
+
+	     
+      //sendAllFriendsInfo(postText, userID)
+      //updatePostsTable(postText, userID)
+
+    case GenerateToken(userID:Int) => 
+                var token= generateToken()
+                var tokenNew = new Token(token)
+                
+                sender ! tokenNew
+
+    case photoReceived(userID: Int,  albumId: String, photoId: String, source:String) =>
+        updatePhotosTable(userID,  albumId, photoId, source)
+    case PutAlbum(userID: Int,  albumId: String) =>
+          
+          var album = albumsTable.getOrElse(userID, null)
+          if(album == null){
+            var newalbum =new ListBuffer[String]
+            newalbum += albumId
+            albumsTable(userID) = newalbum
+          }
+          else{
+            albumsTable(userID) += albumId
+          }
+          println("\nalbumsTable")
+          println("Server Number: "+ myID)
+          println(albumsTable)
+
+    case PutPublicKey(userID:Int, pubKey:String) =>
+            publicKeysTable(userID) = pubKey
+            //println("\npublicKeysTable")
+            //println("Server Number: "+ myID)
+            //println(publicKeysTable) 
+
+
+
+    case requestFriendsList(userID: Int) => returnFriends(userID: Int)
+    case requestPhotos(userID: Int) => returnPhotos(userID: Int)
+    case RequestStatus(statuskey: StatusKey) =>
+      println("hello")
+      var status:StatusText = statusTable(statuskey)
+      sender ! status
+    
+    case STOP() => context.stop(self)
+
+  }
+
+  def init(router: ActorRef) {
+    var rand = new scala.util.Random
+    
+
+    for (i <- 0 to numUsers - 1) {
+      if ((i % numServerDBs) == myID) {
+
+        var numFriends = rand.nextInt(friendsLimit)
+        var friendsList: ListBuffer[Int] = new ListBuffer
+
+        for (j <- 0 to numFriends) {
+          var friendID = rand.nextInt(numUsers - 1)
+          while ((friendID < 0) || (friendsList.contains(friendID))) {
+            friendID = rand.nextInt(numUsers)
+          }
+          friendsList += friendID
+
+        }
+        if (!friendsList.contains(i)) {
+          friendsList += i
+        }
+
+        if (!(friendsList.isEmpty)) {
+          friendsListTable.put(i, friendsList)
+        }
+      }
+    }
+      //println("\nfriendsListTable")
+      //println("Server Number: "+ myID)      
+      //println(friendsListTable) 
+        
+    
+  }
+
+  def sendAllFriendsInfo(postText: String, userID: Int) {
+
+    var retrievedFriends: ListBuffer[Int] = friendsListTable.getOrElse(userID, null)
+
+    if (DEBUG) {
+      if (retrievedFriends != null) {
+        println("retrievedFriends for given userID " + userID)
+        
+        println(retrievedFriends.mkString(","))
+      }
+    }
+
+    var partitionedFriends = retrievedFriends.groupBy(x => x % numServerDBs)
+
+    if (DEBUG) {
+      println("partitioned followers for given userID " + userID)
+      partitionedFriends.foreach { i => println(i) }
+    }
+
+
+
+    for (x <- 0 to numServerDBs - 1) {
+      var temp = partitionedFriends.getOrElse((x), null)
+
+      if (temp != null) {
+        if (DEBUG) {
+          println(temp)
+        }
+
+        context.actorSelection("akka://FacebookServer/user/" + (x)) ! updateTimeline(postText, userID, temp)
+      }
+    }
+
+  }
+  
+
+  def updatePostQueue(postText: String, userID: Int, friendsublist: ListBuffer[Int]) {
+
+
+    var newMember = new Tuple2(postText, userID)
+    for (member <- friendsublist) {
+
+      
+      var postsQ = pagesTable.getOrElse(member, null)
+
+      if (postsQ == null) {
+        
+        postsQ = Queue(newMember);
+
+      } else {
+        postsQ.enqueue(newMember)
+
+        
+        if (postsQ.length > 100) {
+          postsQ.dequeue
+        }
+
+      }
+      
+      pagesTable.put(member, postsQ)
+
+      if (DEBUG) {
+        println("=" * 20)
+        println("inserted text: " + newMember + " into timeline of :" + member)
+        println("=" * 20)
+      }
+    }
+  }
+  
+  def updatePostsTable(postText: String, userID: Int){
+     var newMember = new Tuple2(postText, userID)
+      var postsQ = postsTable.getOrElse(userID, null)
+
+      if (postsQ == null) {
+        
+        postsQ = Queue(newMember);
+
+      } else {
+        postsQ.enqueue(newMember)
+
+        
+        if (postsQ.length > 100) {
+          postsQ.dequeue
+        }
+
+      }
+      
+      postsTable.put(userID, postsQ)
+	}
+
+  def returnPage(userID: Int) {
+    
+    if (DEBUG) {
+      println("#" * 200)
+      println("inside returnPage")
+    }
+
+    var myVar = pagesTable.getOrElse(userID, null)
+
+    if (DEBUG) {
+      if (myVar != null) {
+        println("myVar")
+        println(myVar.mkString("\n"))
+      }
+    }
+
+
+    if (myVar != null) {
+      val qList: scala.collection.immutable.List[Tuple2[String, Int]] = myVar.toList 
+      var x = qList
+      
+      sender ! x
+
+      
+    }
+    else
+    {
+      sender ! List("No Posts on timeline!")
+    }
+  }
+
+  def returnProfile(userID: Int) {
+    //return the queue for userID
+    if (DEBUG) {
+      println("#" * 200)
+      println("inside returnProfile")
+    }
+
+    var myVar = postsTable.getOrElse(userID, null)
+
+    if (DEBUG) {
+      if (myVar != null) {
+        println("myVar")
+        println(myVar.mkString("\n"))
+      }
+    }
+
+    
+    if (myVar != null) {
+      val qList: scala.collection.immutable.List[Tuple2[String, Int]] = myVar.toList 
+      var x = qList
+      
+      sender ! x
+
+      
+    }
+    else
+    {
+      sender ! List("No Posts on timeline!")
+    }
+  }
+
+  def returnPhotos(userID: Int) {
+    //return the queue for userID
+    if (DEBUG) {
+      println("#" * 200)
+      println("inside returnPhotos")
+    }
+    var myVar = photosTable.filterKeys(_._1==userID)
+    //var myVar = photosTable.getOrElse(userID, null)
+
+    if (DEBUG) {
+      if (myVar != null) {
+        println("myVar")
+        println(myVar.mkString("\n"))
+      }
+    }
+
+    
+    if (myVar != null) {
+      //val qList: scala.collection.immutable.List[Tuple2[String, Int]] = myVar.toList 
+      var x = (myVar.toList)
+      
+      sender ! x
+
+      
+    }
+    else
+    {
+      sender ! List("No Posts on timeline!")
+    }
+  }
+
+
+
+
+
+  def returnFriends(userID: Int) {
+    var friendsList = friendsListTable(userID).toList 
+    println(friendsList)
+    var friendsListData = FriendsList(userID, friendsList)
+    sender ! friendsListData
+  }
+
+
+
+  def updatePhotosTable(userID: Int,  albumId: String, photoId: String, source:String){
+    var newPhotoKey = (userID, albumId)
+    var newPhotoValue = (photoId, source)
+    photosTable.put(newPhotoKey, newPhotoValue)
+    println("photosTable: "+ photosTable)    
+  }
+
+def generateToken():Int={
+  var rand = new scala.util.Random
+  var token = rand.nextInt(1000000)
+  return token
+}
+
+
+}
+
+class timerActor(actorsys: ActorSystem, dbList : List[ActorRef],runTime : Int) extends Actor{
+
+  def receive={
+    
+    case start => 
+      var startTime = System.currentTimeMillis()
+      while(System.currentTimeMillis() < startTime + runTime*1000){
+        
+      } 
+       
+      for (db <- dbList){
+        db ! "stop"
+      }
+      
+      actorsys.shutdown
+  }
+}

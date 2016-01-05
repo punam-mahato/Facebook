@@ -1,0 +1,222 @@
+import akka.util.Timeout
+import scala.concurrent.duration._
+import scala.concurrent.ExecutionContext.Implicits.global
+import akka.actor.ActorSystem
+import akka.actor.ActorRef
+import akka.actor.Props
+import akka.pattern.ask
+import org.json4s.Formats
+import org.json4s.DefaultFormats
+import spray.httpx.Json4sSupport
+import org.json4s.JsonAST.JObject
+import spray.routing._
+
+case class Post(uid: Int, text: String,  time:Double, location:String)
+case class PostPhoto(uid: Int,  albumId: String, photoId: String, source:String)
+case class PostAlbum(uid: Int,  albumId: String, photoId: String, source:String)
+object Server extends HttpService with Json4sSupport with SimpleRoutingApp {
+
+  implicit def json4sFormats: Formats = DefaultFormats
+  var assignerList: List[ActorRef] = List()
+  implicit val timeout = Timeout(500.millis)
+  implicit val system = ActorSystem("TwitterServer")
+  val NUMBEROFSERVERASSIGNERS = 4
+  val friendsLimit = 50
+
+
+  var cumulativePostsCount: Int = 0
+  var cumulativeRequestsCount: Int = 0
+
+
+  def main(args: Array[String]) {
+
+    var numUsers: Int = 0
+    var numCli: Int = 0
+    var myIP: String = "localhost"
+    var myPort: Int = 0
+    var runTime:Int = 0
+
+    if (args.length == 4) {
+      numUsers = (args(0).toInt)      
+      myIP = args(1)
+      myPort = args(2).toInt
+      runTime = args(3).toInt
+      for (x <- 0 to NUMBEROFSERVERASSIGNERS - 1) {
+        var SA = system.actorOf(Props(new ServerAssigner(numUsers, system, x, NUMBEROFSERVERASSIGNERS, friendsLimit)), x.toString)
+        if (!assignerList.contains(SA)) {
+          assignerList = assignerList :+ SA
+        }
+      }
+
+      for (SA <- assignerList) {
+        SA ! "init"
+      }
+
+      startServer(interface = myIP, port = myPort) {
+        hello ~ 
+        getProfileRoute ~ 
+        postsRoute ~ 
+        getFriendsListRoute ~ 
+      	getPageRoute ~
+      	postPhotoRoute ~
+	postAlbumRoute ~
+	getPhotosRoute
+      }
+
+      var timer = system.actorOf(Props(new timerActor(system, assignerList,runTime)), "timerActor")
+      timer ! "start"
+
+      
+      val tweetScheduler = system.scheduler.schedule(0 seconds, 1 seconds)(metricReset)
+
+    } else {
+      println("Usage : Server.scala <Number of Users> <Number of Clients> <IP number> <port number> <run time for server>")
+    }
+
+  }
+
+  def metricReset = {
+    println("cumulativePOSTCount: "+cumulativePostsCount + "\t\t" + "cumulativeGETCount: "+cumulativeRequestsCount)
+    cumulativeRequestsCount =0
+    cumulativePostsCount= 0
+  }
+  
+  lazy val getProfileRoute = {
+    get {
+      path("getProfile" / IntNumber) { index =>
+        {
+          complete {
+            cumulativeRequestsCount += 1
+            (assignerList(index % NUMBEROFSERVERASSIGNERS) ? requestProfile(index)).mapTo[spray.json.JsArray]
+              .map(s => s"$s")
+              
+          }
+          //onFailure(myExceptionHandler)
+        }
+      }
+    }
+  }
+
+   lazy val getPageRoute = {
+    get {
+      path("getPage" / IntNumber) { index =>
+        {
+          complete {
+            cumulativeRequestsCount += 1
+            (assignerList(index % NUMBEROFSERVERASSIGNERS) ? requestPage(index)).mapTo[spray.json.JsArray]
+              .map(s => s"$s")
+              
+          }
+          //onFailure(myExceptionHandler)
+        }
+      }
+    }
+  }
+
+
+  lazy val getFriendsListRoute = {
+    get {
+      path("getFriendsList" / IntNumber) { index =>
+        {
+          complete {
+            cumulativeRequestsCount +=1
+            (assignerList(index % NUMBEROFSERVERASSIGNERS) ? requestFriendsList(index)).mapTo[spray.json.JsArray]
+              .map(s => s"$s")
+          }
+        }
+      }
+    }
+  }
+
+  lazy val getPhotosRoute = {
+    get {
+      path("getPhotos" / IntNumber) { index =>
+        {
+          complete {
+            cumulativeRequestsCount += 1
+            (assignerList(index % NUMBEROFSERVERASSIGNERS) ? requestPhotos(index)).mapTo[spray.json.JsArray]
+              .map(s => s"$s")
+              
+          }
+          //onFailure(myExceptionHandler)
+        }
+      }
+    }
+  }
+
+
+  
+  val postsRoute =
+    path("postStatus") {
+      post {
+        entity(as[JObject]) { postObj =>
+          complete {
+              var jpost = postObj.extract[Post]
+              var text = jpost.text
+              var uid = jpost.uid
+              var time = jpost.time.toInt
+              var location = jpost.location
+              cumulativePostsCount+=1
+            assignerList(uid % NUMBEROFSERVERASSIGNERS) ! postReceived(text, uid, time, location)
+            text.toString()
+          }
+        }
+      }
+    }
+
+  val postPhotoRoute =
+    path("postPhoto") {
+      post {
+        entity(as[JObject]) { postObj =>
+          complete {
+              var jpost = postObj.extract[PostPhoto]
+              
+              var ownerID = jpost.uid
+              
+              var albumId = jpost.albumId
+              var photoId = jpost.photoId
+              var source = jpost.source
+              cumulativePostsCount += 1
+            assignerList(ownerID % NUMBEROFSERVERASSIGNERS) ! photoReceived(ownerID,  albumId, photoId, source)
+            source.toString()
+          }
+        }
+      }
+    }  
+
+  val postAlbumRoute =
+    path("postAlbum") {
+      post {
+        entity(as[JObject]) { postObj =>
+          complete {
+              var jpost = postObj.extract[PostPhoto]
+              
+              var ownerID = jpost.uid
+              
+              var albumId = jpost.albumId
+              var photoId = jpost.photoId
+              var source = jpost.source
+              cumulativePostsCount += 1
+            assignerList(ownerID % NUMBEROFSERVERASSIGNERS) ! albumReceived(ownerID,  albumId, photoId, source)
+            source.toString()
+          }
+        }
+      }
+    }
+    
+  
+  
+  lazy val hello = {
+    get {
+      path("hello") {
+        complete {
+          println("Welcome to Facebook Project! \nTeam members: \n Kirthi (UFID:23611276) \n Punam (UFID:68382764)")
+          "Welcome to Facebook Project! Team members: Kirthi (UFID:23611276) Punam (UFID:68382764)"
+        }
+      }
+    }
+  }
+
+
+
+}

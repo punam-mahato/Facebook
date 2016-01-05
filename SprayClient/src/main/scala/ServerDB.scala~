@@ -1,0 +1,76 @@
+import akka.actor.{ ActorRef, ActorSystem, Props, Actor }
+import scala.collection.mutable.HashMap
+import scala.collection.mutable.ListBuffer
+import scala.collection.mutable.Queue
+import scala.collection.mutable.ArrayBuffer
+import spray.json._
+import DefaultJsonProtocol._
+
+case class Init()
+case class Stop()
+case class PostStatus(uid: Int, text: String, time:Double ,location: String)
+case class PostPhoto(uid: Int, source:String, albumId:Int, time:Double ,location:String)
+case class PostAlbum(uid:Int, albumId:Int, time:Double ,location:String)
+case class GetFriendsList(userId:Int)
+case class GetStatus(userId:Int)
+case class GetPhoto(userId:Int)
+case class GetAlbum(userId:Int)
+case class GetProfileTimeline(userId:Int)
+case class GetHomeTimeline(userId:Int)
+
+class ServerDB(numUsers: Int, ac: ActorSystem, myID: Int, numServerDB: Int, FriendsLimit:Int) extends Actor {
+
+	var friendsListTable = HashMap.empty[Int, ArrayBuffer[Int]]
+	var statusTable = HashMap.empty[Int, Tuple3[String, Int, Double]]
+	var albumsTable = HashMap.empty[Int, HashMap.empty[Int, Tuple3[Double, String, ArrayBuffer[Int]]]]
+
+	def receive = {
+		case Init() => init(sender)
+		case PostStatus(uid: Int, text: String, time:Double ,location: String) => postStatus(uid, text, time ,location)
+		case PostPhoto(uid: Int, source:String, albumId:Int, time:Double ,location:String) => postPhoto(uid, source, albumId, time ,location)
+		case PostAlbum(uid:Int, albumId:Int, time:Double ,location:String) => postAlbum(uid, albumId, time ,location)
+		case GetFriendsList(userId:Int) => getFriendsList(userId)
+		case GetStatus(userId:Int) => getStatus(userId)
+		case GetPhoto(userId:Int) => getPhoto(userId)
+		case GetAlbum(userId:Int) => getAlbum(userId)
+		case GetProfileTimeline(userId:Int) => getProfileTimeline(userId)
+		case GetHomePageTimeline(userId:Int) => getHomePageTimeline(userId)
+		case Stop() => context.stop(self)
+	}
+
+
+
+	def init(router: ActorRef) {
+
+	    var friendsList: ArrayBuffer[ArrayBuffer[Int]] = new ArrayBuffer
+	    var temp = new scala.util.Random
+	    for (i <- 0 until numUsers) {	
+	    	if ((i % numServerDB) == myID) {	    	
+		        var numFriends = temp.nextInt(FriendsLimit)		        
+
+		        for (i <- 0 until numFriends) {
+		        	var friendId = temp.nextInt(numUsers-1)
+		        	while ((friendId < 0) || (friendsList.contains(friendId))) {
+		            friendId = temp.nextInt(numUsers-1)}
+		           
+		        	friendsList += friendId
+		        }
+		    	updateFriendsListTable(i, friendsList)    
+		    }    
+	    }    
+
+	}
+
+	def updateFriendsListTable(uid: Int, friendsList: ArrayBuffer[Int]) {
+		if (!(friendsList.isEmpty)) {
+			friendsListTable.put(uid, friendsList)
+    	}
+	}
+
+
+
+
+
+
+
+}

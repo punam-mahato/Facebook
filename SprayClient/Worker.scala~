@@ -1,0 +1,159 @@
+import akka.actor._
+import scala.concurrent.duration._
+import scala.concurrent.ExecutionContext.Implicits.global
+import scala.util.Random
+import akka.actor.ActorSystem
+import scala.collection.mutable.Queue
+import spray.client.pipelining._
+import java.net.URI
+import spray.json._
+import spray.httpx.SprayJsonSupport
+import spray.json.AdditionalFormats
+import org.json4s.Formats
+import org.json4s.DefaultFormats
+import DefaultJsonProtocol._
+
+class Worker( id: Int, users: Int, ip: String, port: String, system: ActorSystem) extends SprayJsonSupport with AdditionalFormats with Actor 
+{
+	val myid: Int = id
+	val postMsg : String = " Inside Chaos originates the hydrogen. Can Discord worry about the flipping spit? Chaos corrects Discord beneath a widest look. Why can't this appreciated vein array your roof? Discord transforms the alliance. How does Discord change around the game? "
+	val pipeline = sendReceive
+	
+	var postScheduler:Cancellable = new Cancellable {override def isCancelled: Boolean = false
+      override def cancel(): Boolean = false
+	}
+	var profileScheduler:Cancellable = new Cancellable {override def isCancelled: Boolean = false
+      override def cancel(): Boolean = false
+	}
+	var pageScheduler:Cancellable = new Cancellable {override def isCancelled: Boolean = false
+      override def cancel(): Boolean = false
+	}
+	var friendScheduler:Cancellable = new Cancellable {override def isCancelled: Boolean = false
+      override def cancel(): Boolean = false
+	}
+	var photoReqScheduler:Cancellable = new Cancellable {override def isCancelled: Boolean = false
+      override def cancel(): Boolean = false
+	}
+	def postStatus() ={
+		var start: Int = Random.nextInt(250)
+		var end : Int = Random.nextInt(250)
+		var text: String = "Hi"
+		var time: Double = System.currentTimeMillis().toDouble
+		//var time: Double = ((time1 * 10000).round / 10000.toDouble)
+		//println(myid+" "+time)
+		var location: String ="Gainesville"
+		pipeline(Post("http://" + ip + ":" + port + "/postStatus", s"""{
+        "uid": $myid,
+        "text": "$text",
+		"time": $time,
+		"location": "$location"
+        }""".asJson.asJsObject))
+	}
+	
+	def postPhoto() ={
+		var photoNum: Int = Random.nextInt(1000000)
+		var photoId : String = "IMG"+photoNum.toString
+		var albumNum: Int = Random.nextInt(20)
+		var albumId : String = "Album"+albumNum.toString
+		var source : String = "Cloud"
+		pipeline(Post("http://" + ip + ":" + port + "/postPhoto", s"""{
+        "uid": $myid,
+        "albumId": "$albumId",
+		"photoId": "$photoId",
+	"source": "$source"
+        }""".asJson.asJsObject))
+	}
+	
+	def postAlbum() ={
+		var albumNum: Int = Random.nextInt(20)
+		var albumId : String = "Album"+albumNum.toString
+			var num: Int =Random.nextInt(1000000)
+			var photoId : String = ""
+			var source : String = ""
+			pipeline(Post("http://" + ip + ":" + port + "/postAlbum", s"""{
+			"uid": $myid,
+			"albumId": "$albumId",
+			"photoId": "$photoId",
+			"source": "$source"
+			}""".asJson.asJsObject))
+			
+		
+	}
+	
+		
+	def getProfile() = 
+	{
+		 val result = pipeline(Get("http://" + ip + ":" + port + "/getProfile/" + myid))
+		result.foreach { response => 
+		  //println(s"status ${response.status} and content:\n${response.entity.asString}")
+
+		}
+	}
+	
+	def getPage() = 
+	{
+		 val result = pipeline(Get("http://" + ip + ":" + port + "/getPage/" + myid))
+		result.foreach { response => 
+		//  println(s"status ${response.status} and content:\n${response.entity.asString}")
+
+		}
+	}
+	
+	def getFriendsList() = 
+	{
+		 val result = pipeline(Get("http://" + ip + ":" + port + "/getFriendsList/" + myid))
+		result.foreach { response => 
+		  //println(s"status ${response.status} and content:\n${response.entity.asString}")
+
+		}
+	}
+	def getPhotos() = 
+	{
+		 val result = pipeline(Get("http://" + ip + ":" + port + "/getPhotos/" + myid))
+		result.foreach { response => 
+		  //println(s"status ${response.status} and content:\n${response.entity.asString}")
+
+		}
+	}
+	
+	def begin()={
+		var value : Int = myid % 4
+		var x: Double =0
+		var y: Double= 0
+		value match
+		{
+			case 0 => 
+			{
+				y = 0.8
+			}
+			case 1 => 
+			{
+				y = 0.325 
+			}
+			case 2 =>
+			{
+				y = 0.125 
+			}
+			case 3 => 
+			{
+				y = 0.45 
+			}
+         
+		}
+		friendScheduler = context.system.scheduler.scheduleOnce((myid.toDouble/users.toDouble*100).toInt seconds)(getFriendsList())
+		pageScheduler = context.system.scheduler.scheduleOnce((myid.toDouble/users.toDouble*10).toInt seconds)(getPage())
+		postScheduler = context.system.scheduler.schedule(0 seconds,y seconds)(postStatus())
+	}
+	
+	def receive =
+	{
+		case "begin" => begin()
+		case "stop" => 
+		  postScheduler.cancel()
+		  profileScheduler.cancel()
+		  pageScheduler.cancel()
+		  friendScheduler.cancel()
+		  photoReqScheduler.cancel()
+	}
+	
+}

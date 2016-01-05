@@ -1,0 +1,264 @@
+import akka.util.Timeout
+import scala.concurrent.duration._
+import scala.concurrent.ExecutionContext.Implicits.global
+import akka.actor.ActorSystem
+import akka.actor.ActorRef
+import akka.actor.Props
+import akka.pattern.ask
+import akka.actor._
+import org.json4s.Formats
+import org.json4s.DefaultFormats
+import spray.httpx.Json4sSupport
+import org.json4s.JsonAST.JObject
+import spray.routing._
+import java.security._
+import spray.util._
+import scala.util.{Failure, Success}
+import ServerDB._
+import FacebookJsonProtocol._
+
+//case class Post(statuskey:StatusKey, status:String)
+case class PostPhoto(uid: Int,  albumId: String, photoId: String, source:String)
+case class PostAlbum(uid: Int,  albumId: String, photoId: String, source:String)
+case class PostPubKey(uid : Int, pubKey: String)
+object Server extends HttpService with Json4sSupport with SimpleRoutingApp {
+
+  implicit def json4sFormats: Formats = DefaultFormats
+  var DBList: List[ActorRef] = List()
+  implicit val timeout = Timeout(500.millis)
+  implicit val system = ActorSystem("FacebookServer")
+  val numServerDB = 4
+  val friendsLimit = 5
+
+
+  var cumulativePostsCount: Int = 0
+  var cumulativeRequestsCount: Int = 0
+
+
+  def main(args: Array[String]) {
+
+    var numUsers: Int = 0
+    var numCli: Int = 0
+    var myIP: String = "localhost"
+    var myPort: Int = 0
+    var runTime:Int = 0
+
+    if (args.length == 4) {
+      numUsers = (args(0).toInt)      
+      myIP = args(1)
+      myPort = args(2).toInt
+      runTime = args(3).toInt
+      for (x <- 0 to numServerDB - 1) {
+        var SA = system.actorOf(Props(new ServerDB(numUsers, system, x, numServerDB, friendsLimit)), x.toString)
+        if (!DBList.contains(SA)) {
+          DBList = DBList :+ SA
+        }
+      }
+
+      for (SA <- DBList) {
+        SA ! INIT()
+      }
+
+      startServer(interface = myIP, port = myPort) {        
+        getProfileRoute ~ 
+        postsRoute ~ 
+        getFriendsListRoute ~ 
+      	getPageRoute ~
+      	postPhotoRoute ~
+	      postAlbumRoute ~
+	      getPhotosRoute ~
+        updatePublicKeyRoute~
+        getTokenRoute
+      }
+
+     // var timer = system.actorOf(Props(new timerActor(system, DBList,runTime)), "timerActor")
+     // timer ! "start"
+
+      
+      val postScheduler = system.scheduler.schedule(0 seconds, 1 seconds)(metricReset)
+
+    } else {
+      println("Usage : Server.scala <Number of Users>  <server IP> <port number> <run time for server>")
+    }
+
+  }
+
+  def metricReset = {
+    println("cumulativePOSTCount: "+cumulativePostsCount + "\t\t" + "cumulativeGETCount: "+cumulativeRequestsCount)
+    cumulativeRequestsCount =0
+    cumulativePostsCount= 0
+  }
+  
+  lazy val getTokenRoute = {
+    get {
+      path("getToken" / IntNumber) { index =>
+        {
+          complete {
+            
+            var res = (DBList(index % numServerDB) ? GenerateToken(index)).mapTo[Token]
+              
+              println(res)
+              println(res.asInstanceOf[AnyRef].getClass.getSimpleName)
+              res.onComplete {
+                case Success(token) => println(token)
+                                  //println(v.token)
+                case Failure(ex) => println("seriously!")
+              }
+              res
+              
+              
+
+              
+          }
+          //onFailure(myExceptionHandler)
+        }
+      }
+    }
+  }
+
+  lazy val getProfileRoute = {
+    get {
+      path("getProfile" / IntNumber) { index =>
+        {
+          complete {
+            cumulativeRequestsCount += 1
+            (DBList(index % numServerDB) ? requestProfile(index)).mapTo[spray.json.JsArray]
+              .map(s => s"$s")
+              
+          }
+          //onFailure(myExceptionHandler)
+        }
+      }
+    }
+  }
+
+   lazy val getPageRoute = {
+    get {
+      path("getPage" / IntNumber) { index =>
+        {
+          complete {
+            cumulativeRequestsCount += 1
+            (DBList(index % numServerDB) ? requestPage(index)).mapTo[spray.json.JsArray]
+              .map(s => s"$s")
+              
+          }
+          //onFailure(myExceptionHandler)
+        }
+      }
+    }
+  }
+
+
+  lazy val getFriendsListRoute = {
+    get {
+      path("getFriendsList" / IntNumber) { index =>
+        {
+          complete {
+            cumulativeRequestsCount +=1
+            (DBList(index % numServerDB) ? requestFriendsList(index)).mapTo[spray.json.JsObject]
+              
+          }
+        }
+      }
+    }
+  }
+
+  lazy val getPhotosRoute = {
+    get {
+      path("getPhotos" / IntNumber) { index =>
+        {
+          complete {
+            cumulativeRequestsCount += 1
+            (DBList(index % numServerDB) ? requestPhotos(index)).mapTo[spray.json.JsArray]
+              .map(s => s"$s")
+              
+          }
+          //onFailure(myExceptionHandler)
+        }
+      }
+    }
+  }
+
+
+  
+  val postsRoute =
+    path("postStatus") {
+      post {
+        entity(as[Status]) { StatusObj =>
+          complete {
+              var uid:Int = StatusObj.statuskey.userID
+              cumulativePostsCount+=1
+            DBList(uid % numServerDB) ! postReceived(StatusObj.statuskey, StatusObj.status)
+            StatusObj
+          }
+        }
+      }
+    }
+
+  val postPhotoRoute =
+    path("postPhoto") {
+      post {
+        entity(as[JObject]) { postObj =>
+          complete {
+              //println(entity_)
+              println(postObj)
+              var jpost = postObj.extract[PostPhoto]
+              
+              var ownerID = jpost.uid
+              
+              var albumId = jpost.albumId
+              var photoId = jpost.photoId
+              var source = jpost.source
+              cumulativePostsCount += 1
+            DBList(ownerID % numServerDB) ! photoReceived(ownerID,  albumId, photoId, source)
+            postObj
+          }
+        }
+      }
+    }  
+
+  val postAlbumRoute =
+    path("postAlbum") {
+      post {
+        entity(as[JObject]) { postObj =>
+          complete {
+
+              var jpost = postObj.extract[PostPhoto]
+              
+              var ownerID = jpost.uid
+              
+              var albumId = jpost.albumId
+              var photoId = jpost.photoId
+              var source = jpost.source
+              
+              cumulativePostsCount += 1
+            DBList(ownerID % numServerDB) ! PutAlbum(ownerID,  albumId)
+            source.toString()
+          }
+        }
+      }
+    }
+
+
+  val updatePublicKeyRoute =
+    path("updatePublicKey") {
+      post {
+        entity(as[JObject]) { postObj =>
+          complete {
+              var jpost = postObj.extract[PostPubKey]
+              
+              var ownerID = jpost.uid
+              
+              var pubKey = jpost.pubKey
+              //println("Server.scala updatePublicKey")
+              //println(pubKey)
+            DBList(ownerID % numServerDB) ! PutPublicKey(ownerID,  pubKey)
+            pubKey.toString()
+          }
+        }
+      }
+    }
+    
+ 
+
+}
